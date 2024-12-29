@@ -1,0 +1,29 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    command: >
+      sh -c "ollama serve"
+    restart: always
+
+  fastapi:
+    build:
+      context: .
+    container_name: chatbot-web
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/code
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: >
+      sh -c "uvicorn main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  ollama:
