@@ -67,12 +67,12 @@ memory = ConversationBufferMemory(
 
 # LLM and embeddings setup
 llm = OllamaLLM(
-    base_url="http://localhost:11434",
-    model="tinyllama",
+    base_url="http://192.168.1.40:11434",
+    model="mistral",
     verbose=True,
     callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
 )
-embedding_function = OllamaEmbeddings(base_url="http://localhost:11434", model="tinyllama")
+embedding_function = OllamaEmbeddings(base_url="http://192.168.1.40:11434", model="mistral")
 
 
 # Save and retrieve retriever from database
