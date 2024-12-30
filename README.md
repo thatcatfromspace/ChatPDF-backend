@@ -1,125 +1,39 @@
-# FastAPI Project with Ollama Integration
+## Project Overview
+- A FastAPI application that manages PDF uploads, processes them into vector stores, and uses Ollama’s local LLM for question answering.  
+- Multiple deployment options: local (with Python and external Ollama container) or fully Dockerized via Docker Compose.
 
-This repository contains a basic FastAPI application integrated with Ollama LLM for local and Dockerized deployments. Follow the steps below to set up and run the project.
+## Key Components  
+- **FastAPI Endpoints**  
+  - `/api/upload_pdf/`: Uploads and processes PDFs  
+  - `/api/ask_question/`: Queries stored document data using Ollama  
+- **Chroma Vector Store**: Stores PDF content embeddings for document retrieval.  
+- **Ollama LLM**: Provides local inference for question answering via a separate container.  
+- **Database (SQLite)**: Maps users to vector store directories, along with saving file paths and timestamps.
 
----
+## Code Architecture  
+1. **Startup**  
+   - `main.py` acts as entry point, configuring middleware, logging, database, API routes, and core logic (LLM setup, vector store connection).  
+2. **PDF Processing**  
+   - Documents split into smaller chunks via `RecursiveCharacterTextSplitter` and stored in a Chroma vector store.  
+3. **Retriever / DB**  
+   - SQLite stores file paths and Chroma paths. Queries are handled by a retriever object.  
+4. **LLM Integration**  
+   - OllamaLLM used with a prompt template and optional conversation memory.  
+   - Docker Compose sets up an Ollama container that listens on port 11434.  
+5. **Endpoints**  
+   - **Upload**: Saves file, creates vector store.  
+   - **Ask**: Retrieves relevant documents, runs LLM Q&A chain.  
 
-## Features
-- Upload a PDF to process and store data using a vector store.
-- Ask questions and retrieve answers using Ollama's LLM.
-- Local and Dockerized deployment support.
+## File Summaries
+- **`README.md`**: Explains usage, prerequisites, project structure, local and Docker-based runs.  
+- **`.gitignore`**: Excludes caches, compiled files, logs, and environment directories from version control.  
 
----
+Dockerfile
 
-## Prerequisites
-1. Python 3.12+
-2. Docker and Docker Compose installed
-3. Basic familiarity with FastAPI and Docker
+Sets up a Python 3.12 FastAPI environment. Exposes port 8000 for the API.  
+- **`docker-compose.yml`**: Defines two services (ollama, fastapi) and shared volumes for model storage.  
+- **`requirements_min.txt`**: Minimal dependencies for the Python environment.  
+- **`requirements.txt`**: Complete dependency list for the Python environment (supports advanced features).  
+- **`main.py`**: Default FastAPI app. Implements PDF chunking with concurrency, vector store creation, and Q&A endpoints using Ollama LLM.  
 
----
-
-## Project Structure
-```plaintext
-.
-├── app/
-│   ├── __init__.py
-│   ├── main.py      # FastAPI entry point
-│   └── ...
-├── requirements.txt # Python dependencies
-├── Dockerfile       # FastAPI Docker setup
-├── docker-compose.yml # Docker Compose for FastAPI and Ollama
-└── README.md        # Project documentation
-```
-
----
-
-## 1. How to Run Locally
-
-### Step 1: Clone the Repository
-```bash
-git clone <repository-url>
-cd <repository-directory>
-```
-
-### Step 2: Install Dependencies
-Ensure you have Python 3.12+ installed.
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Step 3: Run Ollama Locally
-Pull and run the Ollama Docker image:
-```bash
-docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
-```
-
-Start a model (e.g., `llama3`):
-```bash
-docker exec -it ollama ollama run llama3
-```
-
-### Step 4: Start the FastAPI App
-Run the FastAPI app:
-```bash
-uvicorn app.main:app --reload
-```
-
-Access the app at:
-```
-http://localhost:8000
-```
-
----
-
-## 2. How to Run with Docker
-
-### Step 1: Build the Docker Images
-```bash
-docker-compose build
-```
-
-### Step 2: Start the Services
-Run the containers using Docker Compose:
-```bash
-docker-compose up
-```
-
-- The `fastapi` service will run on `http://localhost:8000`.
-- The `ollama` service will run on `http://localhost:11434`.
-
-### Step 3: Test the Endpoints
-Upload a PDF:
-```bash
-curl -X POST \
-  http://127.0.0.1:8000/upload_pdf/ \
-  -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@example.pdf"
-```
-
-Ask a question:
-```bash
-curl -X POST \
-  http://127.0.0.1:8000/ask_question/ \
-  -H "accept: application/json" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the topic?"}'
-```
-
----
-
-## Troubleshooting
-- **Ensure Docker is Running**: Check if Docker services are running.
-- **Ollama Model Loading**: Make sure the `ollama run llama3` command works and the model is properly set up.
-- **Log Files**: Check logs in the `logs/` directory for detailed error information.
-
----
-
-## Additional Notes
-- The app uses Chroma for vector storage, persisting data in the `chroma_store` directory.
-- Ollama runs on port `11434` by default. If you change the port, update the FastAPI app accordingly.
-
-Enjoy building with FastAPI and Ollama! 🚀
+Complete setup instructions can be found in **[setup.md](setup.md)**.

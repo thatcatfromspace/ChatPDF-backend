@@ -67,12 +67,12 @@ memory = ConversationBufferMemory(
 
 # LLM and embeddings setup
 llm = OllamaLLM(
-    base_url="http://192.168.1.40:11434",
-    model="mistral",
+    base_url="http://localhost:11434/",
+    model="tinyllama",
     verbose=True,
     callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
 )
-embedding_function = OllamaEmbeddings(base_url="http://192.168.1.40:11434", model="mistral")
+embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model="tinyllama")
 
 
 # Save and retrieve retriever from database
@@ -99,7 +99,8 @@ async def root():
 
 # Helper function 
 def process_chunking(document_part):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=0) # chunk_size should be around 1500 characters and there must be overlap of ~200
+                                                                                    # but current parameters have been applied to optimize for hardware limitations
     all_splits = text_splitter.split_documents(document_part)
     return all_splits
 
@@ -141,7 +142,7 @@ def parallel_chunking(file_path):
 
 
 # File upload endpoint
-@app.post("/upload_pdf/")
+@app.post("/api/upload_pdf/")
 async def upload_pdf(file: UploadFile = File(...), user_id: str = "default_user"):
     try:
         file_path = f"files/{file.filename}"
@@ -173,7 +174,7 @@ class QuestionRequest(BaseModel):
     question: str
 
 
-@app.post("/ask_question/")
+@app.post("/api/ask_question/")
 async def ask_question(request: QuestionRequest, user_id: str = "default_user"):
     try:
         retriever = get_retriever_from_db(user_id)
@@ -197,8 +198,8 @@ async def ask_question(request: QuestionRequest, user_id: str = "default_user"):
 
 # Global error handler
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc: HTTPException):
-    logging.error(f"HTTP Exception: {exc.detail}")
+async def http_exception_handler(request, e: HTTPException):
+    logging.error(f"HTTP Exception: {e.detail}")
     return JSONResponse(
-        status_code=exc.status_code, content={"message": exc.detail}
+        status_code=e.status_code, content={"message": e.detail}
     )

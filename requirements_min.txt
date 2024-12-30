@@ -1,8 +1,0 @@
-fastapi
-pydantic
-uvicorn
-langchain
-langchain-community
-langchain-text-splitters
-langsmith
-pypdf
