@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from langchain.chains import RetrievalQA
 from langchain.callbacks.manager import CallbackManager
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
@@ -33,10 +33,12 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS retrievers (
-    user_id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
     file_path TEXT NOT NULL,
     chroma_dir TEXT NOT NULL,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(user_id, file_path) ON CONFLICT REPLACE   
 )
 """)
 conn.commit()
@@ -78,14 +80,14 @@ embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model=
 # Save and retrieve retriever from database
 def save_retriever_to_db(user_id: str, file_path: str, chroma_dir: str):
     cursor.execute(
-        "REPLACE INTO retrievers (user_id, file_path, chroma_dir) VALUES (?, ?, ?)",
+        "INSERT INTO retrievers (user_id, file_path, chroma_dir) VALUES (?, ?, ?)",
         (user_id, file_path, chroma_dir),
     )
     conn.commit()
 
 
-def get_retriever_from_db(user_id: str):
-    cursor.execute("SELECT chroma_dir FROM retrievers WHERE user_id = ?", (user_id,))
+def get_retriever_from_db(user_id: str, file_path: str):
+    cursor.execute("SELECT chroma_dir FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
     result = cursor.fetchone()
     if result:
         chroma_dir = result[0]
@@ -99,7 +101,7 @@ async def root():
 
 # Helper function 
 def process_chunking(document_part):
-    text_splitter = CharacterTextSplitter(chunk_size=2000, chunk_overlap=200) # chunk_size should be around 1500 characters and there must be overlap of ~200
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200) # chunk_size should be around 1500 characters and there must be overlap of ~200
                                                                                     # but current parameters have been applied to optimize for hardware limitations
     all_splits = text_splitter.split_documents(document_part)
     return all_splits
@@ -144,13 +146,14 @@ def background_chunker(file_path, chroma_dir, user_id):
 async def get_files(user_id: str = "default_user"):
     cursor.execute("SELECT file_path FROM retrievers WHERE user_id = ?", (user_id,))
     result = cursor.fetchall()
-    return {"files": result}
+    if not result:
+        return {"files": []}
+    return {"files": list(file.lstrip("files/") for file in result[0])}
 
 # File upload endpoint
 @app.post("/api/upload_pdf/")
 async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...), user_id: str = "default_user"):
     try:
-        print(f"Received file: {file.filename}")
         file_path = f"files/{file.filename}"
         chroma_dir = f"chroma_store/{user_id}"
         os.makedirs('files', exist_ok=True)
@@ -183,11 +186,13 @@ class QuestionRequest(BaseModel):
 
 
 @app.post("/api/ask_question/")
-async def ask_question(request: QuestionRequest, user_id: str = "default_user"):
+async def ask_question(request: QuestionRequest, file: str, user_id: str = "default_user"):
     try:
-        retriever = get_retriever_from_db(user_id)
+        if not file:
+            raise HTTPException(status_code=400, detail="PDF file not provided.")
+        retriever = get_retriever_from_db(user_id, f"files/{file}")
         if not retriever:
-            raise HTTPException(status_code=400, detail="PDF not uploaded or retriever not initialized.")
+            raise HTTPException(status_code=400, detail="PDF not uploaded.")
 
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
