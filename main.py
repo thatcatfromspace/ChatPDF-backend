@@ -2,14 +2,14 @@ import concurrent.futures
 import os
 import logging
 import sqlite3
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from langchain.chains import RetrievalQA
 from langchain.callbacks.manager import CallbackManager
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
@@ -72,7 +72,7 @@ llm = OllamaLLM(
     verbose=True,
     callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
 )
-embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model="tinyllama")
+embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model="tinyllama") # NOT a good model enough model - used only because of self hosted LLM
 
 
 # Save and retrieve retriever from database
@@ -99,13 +99,13 @@ async def root():
 
 # Helper function 
 def process_chunking(document_part):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=0) # chunk_size should be around 1500 characters and there must be overlap of ~200
+    text_splitter = CharacterTextSplitter(chunk_size=2000, chunk_overlap=200) # chunk_size should be around 1500 characters and there must be overlap of ~200
                                                                                     # but current parameters have been applied to optimize for hardware limitations
     all_splits = text_splitter.split_documents(document_part)
     return all_splits
 
-# Parallelizing the chunking process. Chunking is a CPU-bound operation and can be parallelized to improve performance, 
-# because chunks are independent of each other. We split the document into 4 parts and processes each part in parallel 
+# Parallelizing the chunking process. Chunking is parallelized to improve performance.
+# We split the document into 4 parts and processes each part in parallel 
 # using ThreadPoolExecutor and store the results into the vector database.
 def parallel_chunking(file_path):
     # Load the PDF document
@@ -118,41 +118,15 @@ def parallel_chunking(file_path):
 
     document_parts = [data[i:i + chunk_size] for i in range(0, num_chunks, chunk_size)]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_parts) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_parts) as executor: # using threads over processes because chunking is I/O bound
         results = list(executor.map(process_chunking, document_parts))
 
     parallel_splits = [chunk for result in results for chunk in result]
     return parallel_splits
 
-# Move PDF chunking to background - better user experience and response times
-# Did not provide significant performance improvement - only optimized for large documents.
-# def background_chunker(file_path, chroma_dir, user_id):
-#     try:
-#         parallel_splits = parallel_chunking(file_path) 
-#         Chroma.from_documents(
-#             documents=parallel_splits,
-#             embedding=embedding_function,
-#             persist_directory=chroma_dir,
-#         )
-
-#         save_retriever_to_db(user_id, file_path, chroma_dir)
-#         logging.info(f"Retriever successfully initialized for user: {user_id}")
-#     except Exception as e:
-#         logging.error(f"Error processing PDF in background: {str(e)}")
-
-
-# File upload endpoint
-@app.post("/api/upload_pdf/")
-async def upload_pdf(file: UploadFile = File(...), user_id: str = "default_user"):
+# Move PDF chunking to background - giving immediate upload response times while easing the load on the server
+def background_chunker(file_path, chroma_dir, user_id):
     try:
-        file_path = f"files/{file.filename}"
-        chroma_dir = f"chroma_store/{user_id}"
-        os.makedirs('files', exist_ok=True)
-        os.makedirs(chroma_dir, exist_ok=True)
-
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
-
         parallel_splits = parallel_chunking(file_path) 
         Chroma.from_documents(
             documents=parallel_splits,
@@ -161,7 +135,41 @@ async def upload_pdf(file: UploadFile = File(...), user_id: str = "default_user"
         )
 
         save_retriever_to_db(user_id, file_path, chroma_dir)
-        logging.info(f"Retriever initialized for user: {user_id}")
+        logging.info(f"Retriever successfully initialized for user: {user_id}")
+    except Exception as e:
+        logging.error(f"Error processing PDF in background: {str(e)}")
+
+
+@app.get("/api/get_files/")
+async def get_files(user_id: str = "default_user"):
+    cursor.execute("SELECT file_path FROM retrievers WHERE user_id = ?", (user_id,))
+    result = cursor.fetchall()
+    return {"files": result}
+
+# File upload endpoint
+@app.post("/api/upload_pdf/")
+async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...), user_id: str = "default_user"):
+    try:
+        print(f"Received file: {file.filename}")
+        file_path = f"files/{file.filename}"
+        chroma_dir = f"chroma_store/{user_id}"
+        os.makedirs('files', exist_ok=True)
+        os.makedirs(chroma_dir, exist_ok=True)
+
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+
+        background_tasks.add_task(background_chunker, file_path, chroma_dir, user_id)
+        
+        # parallel_splits = parallel_chunking(file_path) 
+        # Chroma.from_documents(
+        #     documents=parallel_splits,
+        #     embedding=embedding_function,
+        #     persist_directory=chroma_dir,
+        # )
+
+        # save_retriever_to_db(user_id, file_path, chroma_dir)
+        # logging.info(f"Retriever initialized for user: {user_id}")
 
         return {"message": "PDF uploaded and retriever initialized."}
     except Exception as e:

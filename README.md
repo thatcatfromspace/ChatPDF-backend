@@ -14,9 +14,10 @@
 1. **Startup**  
    - `main.py` acts as entry point, configuring middleware, logging, database, API routes, and core logic (LLM setup, vector store connection).  
 2. **PDF Processing**  
-   - Documents split into smaller chunks via `RecursiveCharacterTextSplitter` and stored in a Chroma vector store.  
+   - Documents split into smaller chunks via **`RecursiveCharacterTextSplitter`** and stored in a Chroma vector store.  
 3. **Retriever / DB**  
    - SQLite stores file paths and Chroma paths. Queries are handled by a retriever object.  
+   - FastAPI **`BackgroundWorker`**  
 4. **LLM Integration**  
    - OllamaLLM used with a prompt template and optional conversation memory.  
    - Docker Compose sets up an Ollama container that listens on port 11434.  
@@ -37,3 +38,7 @@ Sets up a Python 3.12 FastAPI environment. Exposes port 8000 for the API.
 - **`main.py`**: Default FastAPI app. Implements PDF chunking with concurrency, vector store creation, and Q&A endpoints using Ollama LLM.  
 
 Complete setup instructions can be found in **[setup.md](setup.md)**.
+
+## Observations and Shortcomings
+
+- Also tried implementing a **`Celery`** worker for moving chunking to the background but was faced with issues. 
