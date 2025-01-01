@@ -148,7 +148,7 @@ async def get_files(user_id: str = "default_user"):
     result = cursor.fetchall()
     if not result:
         return {"files": []}
-    return {"files": list(file.lstrip("files/") for file in result[0])}
+    return {"files": list(file[0].lstrip("files/") for file in result)}
 
 # File upload endpoint
 @app.post("/api/upload_pdf/")
@@ -190,6 +190,7 @@ async def ask_question(request: QuestionRequest, file: str, user_id: str = "defa
     try:
         if not file:
             raise HTTPException(status_code=400, detail="PDF file not provided.")
+        
         retriever = get_retriever_from_db(user_id, f"files/{file}")
         if not retriever:
             raise HTTPException(status_code=400, detail="PDF not uploaded.")

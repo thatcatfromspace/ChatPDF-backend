@@ -175,3 +175,4 @@ chroma_store/
 
 # File store
 files/
+retrievers.db
