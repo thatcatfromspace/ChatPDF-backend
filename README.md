@@ -2,6 +2,8 @@
 - A FastAPI application that manages PDF uploads, processes them into vector stores, and uses Ollama’s local LLM for question answering.  
 - Multiple deployment options: local (with Python and external Ollama container) or fully Dockerized via Docker Compose.
 
+**The backend is hosted on a GCP server.**
+
 ## Key Components  
 - **FastAPI Endpoints**  
   - `/api/upload_pdf/`: Uploads and processes PDFs  
