@@ -107,3 +107,8 @@ curl -X POST \
 - The app uses Chroma for vector storage, persisting data in the `chroma_store` directory.
 - Ollama runs on port `11434` by default. If you change the port, update the FastAPI app accordingly.
 
+## Running on a cloud server
+- The backend is already hosted on a GCP server.
+- To replicate it, install `nginx` and `certbot` on the server.
+- Obtain a free SSL certificate and a DNS record for the static IP on the server.
+- Configure the DNS to match the IP.
