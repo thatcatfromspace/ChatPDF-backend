@@ -5,6 +5,7 @@ import sqlite3
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from langchain.chains import RetrievalQA
 from langchain.callbacks.manager import CallbackManager
@@ -45,6 +46,8 @@ conn.commit()
 
 # App setup
 app = FastAPI()
+
+app.mount("/.well-known", StaticFiles(directory="./.well-known"), name=".well-known")
 
 app.add_middleware(
     CORSMiddleware,
