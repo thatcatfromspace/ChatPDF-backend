@@ -25,7 +25,7 @@ class Status(Enum):
     FAILED = "failed"
 
 FILE_STORE = "files/"
-LLM_MODEL = "tinyllama"
+LLM_MODEL = "mistral"
 
 # Logging setup
 if not os.path.exists('logs'):
