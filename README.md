@@ -17,6 +17,7 @@
    - `main.py` acts as entry point, configuring middleware, logging, database, API routes, and core logic (LLM setup, vector store connection).  
 2. **PDF Processing**  
    - Documents split into smaller chunks via **`RecursiveCharacterTextSplitter`** and stored in a Chroma vector store.  
+   - Provides an polling endpoint that provides live file processing updates.
 3. **Retriever / DB**  
    - SQLite stores file paths and Chroma paths. Queries are handled by a retriever object.  
    - FastAPI **`BackgroundWorker`**  
