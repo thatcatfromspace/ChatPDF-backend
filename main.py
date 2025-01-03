@@ -1,11 +1,11 @@
 import concurrent.futures
+from enum import Enum
 import os
 import logging
 import sqlite3
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from langchain.chains import RetrievalQA
 from langchain.callbacks.manager import CallbackManager
@@ -16,6 +16,16 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_chroma import Chroma
+
+# Basic enum to keep track of retriever status
+class Status(Enum):
+    INITIALIZED = "initialized"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+FILE_STORE = "files/"
+LLM_MODEL = "tinyllama"
 
 # Logging setup
 if not os.path.exists('logs'):
@@ -32,12 +42,13 @@ db_path = "retrievers.db"
 conn = sqlite3.connect(db_path, check_same_thread=False)
 cursor = conn.cursor()
 
-cursor.execute("""
+cursor.execute(f"""
 CREATE TABLE IF NOT EXISTS retrievers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     file_path TEXT NOT NULL,
     chroma_dir TEXT NOT NULL,
+    status TEXT DEFAULT {Status.INITIALIZED.value} NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     UNIQUE(user_id, file_path) ON CONFLICT REPLACE   
 )
@@ -46,9 +57,6 @@ conn.commit()
 
 # App setup
 app = FastAPI()
-
-# SSL verification
-app.mount("/.well-known", StaticFiles(directory="./.well-known"), name=".well-known")
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,11 +82,11 @@ memory = ConversationBufferMemory(
 # LLM and embeddings setup
 llm = OllamaLLM(
     base_url="http://localhost:11434/",
-    model="mistral",
+    model=LLM_MODEL,
     verbose=True,
     callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
 )
-embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model="mistral") # NOT a good model enough model - used only because of self hosted LLM
+embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model=LLM_MODEL) # NOT a good model enough model - used only because of self hosted LLM
 
 
 # Save and retrieve retriever from database
@@ -89,15 +97,20 @@ def save_retriever_to_db(user_id: str, file_path: str, chroma_dir: str):
     )
     conn.commit()
 
-
 def get_retriever_from_db(user_id: str, file_path: str):
-    cursor.execute("SELECT chroma_dir FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
+    cursor.execute("SELECT chroma_dir, status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
     result = cursor.fetchone()
-    if result:
+    if result and result[1] == Status.COMPLETED.value:
         chroma_dir = result[0]
         return Chroma(persist_directory=chroma_dir, embedding_function=embedding_function).as_retriever()
     return None
 
+def update_retriever_status(user_id: str, file_path: str, status: Status):
+    cursor.execute("UPDATE retrievers SET status = ? WHERE user_id = ? AND file_path = ?", (status.value, user_id, file_path))
+    conn.commit()
+
+def check_file_exists(file_path: str):
+    return os.path.exists(file_path)
 
 @app.get("/")
 async def root():
@@ -140,10 +153,19 @@ def background_chunker(file_path, chroma_dir, user_id):
             persist_directory=chroma_dir,
         )
 
-        save_retriever_to_db(user_id, file_path, chroma_dir)
+        print("File processing completed.")
+        update_retriever_status(user_id, file_path, Status.COMPLETED)
         logging.info(f"Retriever successfully initialized for user: {user_id}")
     except Exception as e:
         logging.error(f"Error processing PDF in background: {str(e)}")
+
+@app.get("/api/upload_status/")
+async def upload_status(file_path: str, user_id: str = "default_user"):
+    cursor.execute("SELECT status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, f"{FILE_STORE}{file_path}"))
+    result = cursor.fetchone()
+    if not result:
+        return {"status": "No PDF uploaded."}
+    return {"file": file_path.lstrip(FILE_STORE), "status": result[0]}
 
 
 @app.get("/api/get_files/")
@@ -152,13 +174,17 @@ async def get_files(user_id: str = "default_user"):
     result = cursor.fetchall()
     if not result:
         return {"files": []}
-    return {"files": list(file[0].lstrip("files/") for file in result)}
+    return {"files": list(file[0].lstrip(FILE_STORE) for file in result)}
 
 # File upload endpoint
 @app.post("/api/upload_pdf/")
 async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...), user_id: str = "default_user"):
     try:
-        file_path = f"files/{file.filename}"
+        file_path = f"{FILE_STORE}{file.filename}"
+
+        if check_file_exists(file_path):
+            return {"message": "PDF already uploaded."}
+        
         chroma_dir = f"chroma_store/{user_id}"
         os.makedirs('files', exist_ok=True)
         os.makedirs(chroma_dir, exist_ok=True)
@@ -166,7 +192,11 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
+        save_retriever_to_db(user_id, file_path, chroma_dir)
+
         background_tasks.add_task(background_chunker, file_path, chroma_dir, user_id)
+        
+        update_retriever_status(user_id, file_path, Status.PROCESSING)
         
         # parallel_splits = parallel_chunking(file_path) 
         # Chroma.from_documents(
@@ -178,7 +208,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         # save_retriever_to_db(user_id, file_path, chroma_dir)
         # logging.info(f"Retriever initialized for user: {user_id}")
 
-        return {"message": "PDF uploaded and retriever initialized."}
+        return {"message": "PDF uploaded and processing started."}
     except Exception as e:
         logging.error(f"Error uploading PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading PDF: {str(e)}")
@@ -195,7 +225,7 @@ async def ask_question(request: QuestionRequest, file: str, user_id: str = "defa
         if not file:
             raise HTTPException(status_code=400, detail="PDF file not provided.")
         
-        retriever = get_retriever_from_db(user_id, f"files/{file}")
+        retriever = get_retriever_from_db(user_id, f"{FILE_STORE}{file}")
         if not retriever:
             raise HTTPException(status_code=400, detail="PDF not uploaded.")
 
