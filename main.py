@@ -47,6 +47,7 @@ conn.commit()
 # App setup
 app = FastAPI()
 
+# SSL verification
 app.mount("/.well-known", StaticFiles(directory="./.well-known"), name=".well-known")
 
 app.add_middleware(
