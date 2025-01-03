@@ -185,7 +185,8 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         if check_file_exists(file_path):
             return {"message": "PDF already uploaded."}
         
-        chroma_dir = f"chroma_store/{user_id}"
+
+        chroma_dir = f"chroma_store/{user_id}/{file.filename[0:16]}"
         os.makedirs('files', exist_ok=True)
         os.makedirs(chroma_dir, exist_ok=True)
 
