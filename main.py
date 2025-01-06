@@ -25,7 +25,7 @@ class Status(Enum):
     FAILED = "failed"
 
 FILE_STORE = "files/"
-LLM_MODEL = "mistral"
+LANGUAGE_MODEL = "tinyllama"
 
 # Logging setup
 if not os.path.exists('logs'):
@@ -38,11 +38,15 @@ logging.basicConfig(
 )
 
 # Database setup
-db_path = "retrievers.db"
-conn = sqlite3.connect(db_path, check_same_thread=False)
-cursor = conn.cursor()
+RETRIEVER_DB_PATH = "retrievers.db"
+retriever_conn = sqlite3.connect(RETRIEVER_DB_PATH, check_same_thread=False)
+retriever_cursor = retriever_conn.cursor()
 
-cursor.execute(f"""
+RESPONSE_DB_PATH = "responses.db"
+response_conn = sqlite3.connect(RESPONSE_DB_PATH, check_same_thread=False)
+response_cursor = response_conn.cursor()
+
+retriever_cursor.execute(f"""
 CREATE TABLE IF NOT EXISTS retrievers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
@@ -53,7 +57,21 @@ CREATE TABLE IF NOT EXISTS retrievers (
     UNIQUE(user_id, file_path) ON CONFLICT REPLACE   
 )
 """)
-conn.commit()
+retriever_conn.commit()
+
+response_cursor.execute(f"""
+CREATE TABLE IF NOT EXISTS responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    status TEXT DEFAULT {Status.INITIALIZED.value} NOT NULL,
+    response TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(user_id, file_path) ON CONFLICT REPLACE
+)
+""")
+response_conn.commit()
+
 
 # App setup
 app = FastAPI()
@@ -75,39 +93,45 @@ prompt = PromptTemplate(
     User: {question}
     Chatbot:""",
 )
+
 memory = ConversationBufferMemory(
     memory_key="history", return_messages=True, input_key="question"
 )
 
+
 # LLM and embeddings setup
 llm = OllamaLLM(
     base_url="http://localhost:11434/",
-    model=LLM_MODEL,
+    model=LANGUAGE_MODEL,
     verbose=True,
     callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
 )
-embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model=LLM_MODEL) # NOT a good model enough model - used only because of self hosted LLM
+embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model=LANGUAGE_MODEL) # NOT a good model enough model - used only because of self hosted LLM
 
+
+# Clear memory if needed - do not mix previously requested documents with new ones
+def clear_conversation_memory():
+    memory.clear()
 
 # Save and retrieve retriever from database
-def save_retriever_to_db(user_id: str, file_path: str, chroma_dir: str):
-    cursor.execute(
+def save_retriever(user_id: str, file_path: str, chroma_dir: str):
+    retriever_cursor.execute(
         "INSERT INTO retrievers (user_id, file_path, chroma_dir) VALUES (?, ?, ?)",
         (user_id, file_path, chroma_dir),
     )
-    conn.commit()
+    retriever_conn.commit()
 
-def get_retriever_from_db(user_id: str, file_path: str):
-    cursor.execute("SELECT chroma_dir, status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
-    result = cursor.fetchone()
+def get_retriever(user_id: str, file_path: str):
+    retriever_cursor.execute("SELECT chroma_dir, status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
+    result = retriever_cursor.fetchone()
     if result and result[1] == Status.COMPLETED.value:
         chroma_dir = result[0]
         return Chroma(persist_directory=chroma_dir, embedding_function=embedding_function).as_retriever()
     return None
 
 def update_retriever_status(user_id: str, file_path: str, status: Status):
-    cursor.execute("UPDATE retrievers SET status = ? WHERE user_id = ? AND file_path = ?", (status.value, user_id, file_path))
-    conn.commit()
+    retriever_cursor.execute("UPDATE retrievers SET status = ? WHERE user_id = ? AND file_path = ?", (status.value, user_id, file_path))
+    retriever_conn.commit()
 
 def check_file_exists(file_path: str):
     return os.path.exists(file_path)
@@ -159,10 +183,61 @@ def background_chunker(file_path, chroma_dir, user_id):
     except Exception as e:
         logging.error(f"Error processing PDF in background: {str(e)}")
 
+
+def save_response(user_id, file_path, response):
+    response_cursor.execute(
+        "INSERT INTO responses (user_id, file_path, response) VALUES (?, ?, ?)",
+        (user_id, file_path, response),
+    )
+    response_conn.commit()
+
+def get_response(user_id, file_path):
+    response_cursor.execute("SELECT response FROM responses WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
+    result = response_cursor.fetchone()
+    if result:
+        return result[0]
+    return None
+
+
+def get_response_from_model(user_id, file_path, question):
+    retriever = get_retriever(user_id, file_path)
+    if not retriever:
+        return None
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        verbose=False,
+        chain_type_kwargs={"prompt": prompt, "memory": memory},
+    )
+
+    response = qa_chain.invoke(question)
+    return response["result"]
+
+def background_response_processor(user_id, file_path, question):
+    try:
+        question = get_response_from_model(user_id, file_path, question)
+        save_response(user_id, file_path, question)
+
+        logging.info(f"Response saved for user: {user_id}")
+    except Exception as e:
+        logging.error(f"Error saving response in background: {str(e)}")
+
+def update_response_status(user_id: str, file_path: str, status: str):
+    response_cursor.execute("UPDATE responses SET status = ? WHERE user_id = ? AND file_path = ?", (status, user_id, file_path))
+    response_conn.commit()
+
+# Clear memory if needed - do not mix previously requested documents with new ones
+@app.post("/api/clear_memory/")
+async def clear_memory():
+    clear_conversation_memory()
+    return {"message": "Memory cleared."}
+
 @app.get("/api/upload_status/")
 async def upload_status(file_path: str, user_id: str = "default_user"):
-    cursor.execute("SELECT status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, f"{FILE_STORE}{file_path}"))
-    result = cursor.fetchone()
+    retriever_cursor.execute("SELECT status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, f"{FILE_STORE}{file_path}"))
+    result = retriever_cursor.fetchone()
     if not result:
         return {"status": "No PDF uploaded."}
     return {"file": file_path.lstrip(FILE_STORE), "status": result[0]}
@@ -170,8 +245,8 @@ async def upload_status(file_path: str, user_id: str = "default_user"):
 
 @app.get("/api/get_files/")
 async def get_files(user_id: str = "default_user"):
-    cursor.execute("SELECT file_path FROM retrievers WHERE user_id = ?", (user_id,))
-    result = cursor.fetchall()
+    retriever_cursor.execute("SELECT file_path FROM retrievers WHERE user_id = ?", (user_id,))
+    result = retriever_cursor.fetchall()
     if not result:
         return {"files": []}
     return {"files": list(file[0].lstrip(FILE_STORE) for file in result)}
@@ -193,21 +268,11 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
-        save_retriever_to_db(user_id, file_path, chroma_dir)
+        save_retriever(user_id, file_path, chroma_dir)
 
         background_tasks.add_task(background_chunker, file_path, chroma_dir, user_id)
         
         update_retriever_status(user_id, file_path, Status.PROCESSING)
-        
-        # parallel_splits = parallel_chunking(file_path) 
-        # Chroma.from_documents(
-        #     documents=parallel_splits,
-        #     embedding=embedding_function,
-        #     persist_directory=chroma_dir,
-        # )
-
-        # save_retriever_to_db(user_id, file_path, chroma_dir)
-        # logging.info(f"Retriever initialized for user: {user_id}")
 
         return {"message": "PDF uploaded and processing started."}
     except Exception as e:
@@ -221,29 +286,38 @@ class QuestionRequest(BaseModel):
 
 
 @app.post("/api/ask_question/")
-async def ask_question(request: QuestionRequest, file: str, user_id: str = "default_user"):
+async def ask_question(request: QuestionRequest, background_tasks: BackgroundTasks, file: str, user_id: str = "default_user"):
     try:
         if not file:
             raise HTTPException(status_code=400, detail="PDF file not provided.")
         
-        retriever = get_retriever_from_db(user_id, f"{FILE_STORE}{file}")
+        retriever = get_retriever(user_id, f"{FILE_STORE}{file}")
         if not retriever:
             raise HTTPException(status_code=400, detail="PDF not uploaded.")
 
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
-            verbose=False,
-            chain_type_kwargs={"prompt": prompt, "memory": memory},
-        )
+        background_tasks.add_task(background_response_processor, user_id, f"{FILE_STORE}{file}", request.question)
 
-        response = qa_chain.invoke(request.question)
-        return {"answer": response["result"]}
+        return {"message": "Question received. Processing response in the background."}
+    
     except Exception as e:
         logging.error(f"Error answering question: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error answering question: {str(e)}")
 
+@app.get("/api/response_status/")
+async def response_status(file_path: str, user_id: str = "default_user"):
+    response_cursor.execute("SELECT status FROM responses WHERE user_id = ? AND file_path = ?", (user_id, f"{FILE_STORE}{file_path}"))
+    result = response_cursor.fetchone()
+    if not result:
+        return {"status": "No record of conversation."}
+
+    if result[0] == Status.PROCESSING.value:
+        return {"status": result[0]}
+    
+    if result[0] == Status.COMPLETED.value:
+        response = get_response(user_id, f"{FILE_STORE}{file_path}")
+        return {"status": result[0], "response": response}
+    
+    return {"status": result[0]}
 
 # Global error handler
 @app.exception_handler(HTTPException)
