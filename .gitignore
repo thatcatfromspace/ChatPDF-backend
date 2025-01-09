@@ -177,3 +177,4 @@ chroma_store/
 logs/
 files/
 retrievers.db
+responses.db

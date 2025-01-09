@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS responses (
     user_id TEXT NOT NULL,
     file_path TEXT NOT NULL,
     status TEXT DEFAULT {Status.INITIALIZED.value} NOT NULL,
-    response TEXT NOT NULL,
+    response TEXT DEFAULT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     UNIQUE(user_id, file_path) ON CONFLICT REPLACE
 )
@@ -197,7 +197,6 @@ def get_response(user_id, file_path):
     if result:
         return result[0]
     return None
-
 
 def get_response_from_model(user_id, file_path, question):
     retriever = get_retriever(user_id, file_path)
