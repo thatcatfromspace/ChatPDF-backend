@@ -1,6 +1,6 @@
 ## Try it Out!
 
-`https://ai-planet-chatbot.vercel.app`
+https://ai-planet-chatbot.vercel.app
 
 NOTE: Running the server locally gives much better response times, the remote deployment runs on bare minimum hardware and processing times are longer.
 
