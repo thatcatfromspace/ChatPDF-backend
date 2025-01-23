@@ -1,3 +1,9 @@
+## Try it Out!
+
+`https://ai-planet-chatbot.vercel.app`
+
+NOTE: Running the server locally gives much better response times, the remote deployment runs on bare minimum hardware and processing times are longer.
+
 ## Project Overview
 - A FastAPI application that manages PDF uploads, processes them into vector stores, and uses Ollama’s local LLM for question answering.  
 - Multiple deployment options: local (with Python and external Ollama container) or fully Dockerized via Docker Compose.
