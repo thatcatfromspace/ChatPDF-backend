@@ -72,7 +72,6 @@ CREATE TABLE IF NOT EXISTS responses (
 """)
 response_conn.commit()
 
-
 # App setup
 app = FastAPI()
 
@@ -84,7 +83,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Prompt and memory setup
+# Prompt setup
 prompt = PromptTemplate(
     input_variables=["history", "context", "question"],
     template="""You are a knowledgeable chatbot. Provide helpful answers.
@@ -94,10 +93,17 @@ prompt = PromptTemplate(
     Chatbot:""",
 )
 
-memory = ConversationBufferMemory(
-    memory_key="history", return_messages=True, input_key="question"
-)
-
+# Maintain separate memories for each user and each file
+memory_map = {}
+def get_or_create_memory(user_id: str, file_path: str):
+    key = (user_id, file_path)
+    if key not in memory_map:
+        memory_map[key] = ConversationBufferMemory(
+            memory_key="history",
+            return_messages=True,
+            input_key="question"
+        )
+    return memory_map[key]
 
 # LLM and embeddings setup
 llm = OllamaLLM(
@@ -108,10 +114,11 @@ llm = OllamaLLM(
 )
 embedding_function = OllamaEmbeddings(base_url="http://localhost:11434/", model=LANGUAGE_MODEL) # NOT a good model enough model - used only because of self hosted LLM
 
-
 # Clear memory if needed - do not mix previously requested documents with new ones
-def clear_conversation_memory():
-    memory.clear()
+def clear_conversation_memory(user_id: str, file_path: str):
+    key = (user_id, file_path)
+    if key in memory_map:
+        memory_map[key].clear()
 
 # Save and retrieve retriever from database
 def save_retriever(user_id: str, file_path: str, chroma_dir: str):
@@ -143,7 +150,7 @@ async def root():
 # Helper function 
 def process_chunking(document_part):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200) # chunk_size should be around 1500 characters and there must be overlap of ~200
-                                                                                    # but current parameters have been applied to optimize for hardware limitations
+                                                                                       # but current parameters have been applied to optimize for hardware limitations
     all_splits = text_splitter.split_documents(document_part)
     return all_splits
 
@@ -183,7 +190,6 @@ def background_chunker(file_path, chroma_dir, user_id):
     except Exception as e:
         logging.error(f"Error processing PDF in background: {str(e)}")
 
-
 def save_response(user_id, file_path, response):
     response_cursor.execute(
         "INSERT INTO responses (user_id, file_path, response) VALUES (?, ?, ?)",
@@ -202,15 +208,15 @@ def get_response_from_model(user_id, file_path, question):
     retriever = get_retriever(user_id, file_path)
     if not retriever:
         return None
-
+    # Use or create a memory for each user-file pair
+    user_file_memory = get_or_create_memory(user_id, file_path)
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
         retriever=retriever,
         verbose=False,
-        chain_type_kwargs={"prompt": prompt, "memory": memory},
+        chain_type_kwargs={"prompt": prompt, "memory": user_file_memory},
     )
-
     response = qa_chain.invoke(question)
     return response["result"]
 
@@ -218,7 +224,6 @@ def background_response_processor(user_id, file_path, question):
     try:
         question = get_response_from_model(user_id, file_path, question)
         save_response(user_id, file_path, question)
-
         logging.info(f"Response saved for user: {user_id}")
     except Exception as e:
         logging.error(f"Error saving response in background: {str(e)}")
@@ -227,10 +232,9 @@ def update_response_status(user_id: str, file_path: str, status: str):
     response_cursor.execute("UPDATE responses SET status = ? WHERE user_id = ? AND file_path = ?", (status, user_id, file_path))
     response_conn.commit()
 
-# Clear memory if needed - do not mix previously requested documents with new ones
 @app.post("/api/clear_memory/")
-async def clear_memory():
-    clear_conversation_memory()
+async def clear_memory_endpoint(user_id: str, file_path: str):
+    clear_conversation_memory(user_id, file_path)
     return {"message": "Memory cleared."}
 
 @app.get("/api/upload_status/")
@@ -240,7 +244,6 @@ async def upload_status(file_path: str, user_id: str = "default_user"):
     if not result:
         return {"status": "No PDF uploaded."}
     return {"file": file_path.lstrip(FILE_STORE), "status": result[0]}
-
 
 @app.get("/api/get_files/")
 async def get_files(user_id: str = "default_user"):
@@ -255,12 +258,11 @@ async def get_files(user_id: str = "default_user"):
 async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...), user_id: str = "default_user"):
     try:
         file_path = f"{FILE_STORE}{file.filename}"
-
         if check_file_exists(file_path):
             return {"message": "PDF already uploaded."}
         
-
         chroma_dir = f"chroma_store/{user_id}/{file.filename[0:16]}"
+
         os.makedirs('files', exist_ok=True)
         os.makedirs(chroma_dir, exist_ok=True)
 
@@ -268,36 +270,28 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
             f.write(await file.read())
 
         save_retriever(user_id, file_path, chroma_dir)
-
         background_tasks.add_task(background_chunker, file_path, chroma_dir, user_id)
-        
         update_retriever_status(user_id, file_path, Status.PROCESSING)
-
         return {"message": "PDF uploaded and processing started."}
+    
     except Exception as e:
         logging.error(f"Error uploading PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading PDF: {str(e)}")
 
-
 # Question-answering endpoint
 class QuestionRequest(BaseModel):
     question: str
-
 
 @app.post("/api/ask_question/")
 async def ask_question(request: QuestionRequest, background_tasks: BackgroundTasks, file: str, user_id: str = "default_user"):
     try:
         if not file:
             raise HTTPException(status_code=400, detail="PDF file not provided.")
-        
         retriever = get_retriever(user_id, f"{FILE_STORE}{file}")
         if not retriever:
             raise HTTPException(status_code=400, detail="PDF not uploaded.")
-
         background_tasks.add_task(background_response_processor, user_id, f"{FILE_STORE}{file}", request.question)
-
         return {"message": "Question received. Processing response in the background."}
-    
     except Exception as e:
         logging.error(f"Error answering question: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error answering question: {str(e)}")
@@ -308,14 +302,11 @@ async def response_status(file_path: str, user_id: str = "default_user"):
     result = response_cursor.fetchone()
     if not result:
         return {"status": "No record of conversation."}
-
     if result[0] == Status.PROCESSING.value:
         return {"status": result[0]}
-    
     if result[0] == Status.COMPLETED.value:
         response = get_response(user_id, f"{FILE_STORE}{file_path}")
         return {"status": result[0], "response": response}
-    
     return {"status": result[0]}
 
 # Global error handler
