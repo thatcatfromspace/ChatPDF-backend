@@ -25,7 +25,7 @@ class Status(Enum):
     FAILED = "failed"
 
 FILE_STORE = "files/"
-LANGUAGE_MODEL = "mistral"
+LANGUAGE_MODEL = "tinyllama"
 
 # Logging setup
 if not os.path.exists('logs'):
@@ -222,10 +222,16 @@ def get_response_from_model(user_id, file_path, question):
 
 def background_response_processor(user_id, file_path, question):
     try:
-        question = get_response_from_model(user_id, file_path, question)
-        save_response(user_id, file_path, question)
+        update_response_status(user_id, file_path, Status.PROCESSING.value)
+        
+        answer = get_response_from_model(user_id, file_path, question)
+        save_response(user_id, file_path, answer)
+        
+        update_response_status(user_id, file_path, Status.COMPLETED.value)
         logging.info(f"Response saved for user: {user_id}")
+
     except Exception as e:
+        update_response_status(user_id, file_path, Status.FAILED.value)
         logging.error(f"Error saving response in background: {str(e)}")
 
 def update_response_status(user_id: str, file_path: str, status: str):
