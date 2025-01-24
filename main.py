@@ -1,5 +1,4 @@
 import concurrent.futures
-from enum import Enum
 import os
 import logging
 import sqlite3
@@ -17,15 +16,8 @@ from langchain.memory import ConversationBufferMemory
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_chroma import Chroma
 
-# Basic enum to keep track of retriever status
-class Status(Enum):
-    INITIALIZED = "initialized"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-FILE_STORE = "files/"
-LANGUAGE_MODEL = "tinyllama"
+from settings.constants import Status, FILE_STORE, LANGUAGE_MODEL, RETRIEVER_DB_PATH, RESPONSE_DB_PATH
+from utils.retriever import Retriever
 
 # Logging setup
 if not os.path.exists('logs'):
@@ -38,11 +30,9 @@ logging.basicConfig(
 )
 
 # Database setup
-RETRIEVER_DB_PATH = "retrievers.db"
 retriever_conn = sqlite3.connect(RETRIEVER_DB_PATH, check_same_thread=False)
 retriever_cursor = retriever_conn.cursor()
 
-RESPONSE_DB_PATH = "responses.db"
 response_conn = sqlite3.connect(RESPONSE_DB_PATH, check_same_thread=False)
 response_cursor = response_conn.cursor()
 
@@ -120,25 +110,7 @@ def clear_conversation_memory(user_id: str, file_path: str):
     if key in memory_map:
         memory_map[key].clear()
 
-# Save and retrieve retriever from database
-def save_retriever(user_id: str, file_path: str, chroma_dir: str):
-    retriever_cursor.execute(
-        "INSERT INTO retrievers (user_id, file_path, chroma_dir) VALUES (?, ?, ?)",
-        (user_id, file_path, chroma_dir),
-    )
-    retriever_conn.commit()
-
-def get_retriever(user_id: str, file_path: str):
-    retriever_cursor.execute("SELECT chroma_dir, status FROM retrievers WHERE user_id = ? AND file_path = ?", (user_id, file_path,))
-    result = retriever_cursor.fetchone()
-    if result and result[1] == Status.COMPLETED.value:
-        chroma_dir = result[0]
-        return Chroma(persist_directory=chroma_dir, embedding_function=embedding_function).as_retriever()
-    return None
-
-def update_retriever_status(user_id: str, file_path: str, status: Status):
-    retriever_cursor.execute("UPDATE retrievers SET status = ? WHERE user_id = ? AND file_path = ?", (status.value, user_id, file_path))
-    retriever_conn.commit()
+retriever_client = Retriever(retriever_conn, retriever_cursor, embedding_function)
 
 def check_file_exists(file_path: str):
     return os.path.exists(file_path)
@@ -185,7 +157,7 @@ def background_chunker(file_path, chroma_dir, user_id):
         )
 
         print("File processing completed.")
-        update_retriever_status(user_id, file_path, Status.COMPLETED)
+        retriever_client.update_retriever_status(user_id, file_path, Status.COMPLETED)
         logging.info(f"Retriever successfully initialized for user: {user_id}")
     except Exception as e:
         logging.error(f"Error processing PDF in background: {str(e)}")
@@ -205,7 +177,7 @@ def get_response(user_id, file_path):
     return None
 
 def get_response_from_model(user_id, file_path, question):
-    retriever = get_retriever(user_id, file_path)
+    retriever = retriever_client.get_retriever(user_id, file_path)
     if not retriever:
         return None
     # Use or create a memory for each user-file pair
@@ -275,9 +247,9 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
-        save_retriever(user_id, file_path, chroma_dir)
+        retriever_client.save_retriever(user_id, file_path, chroma_dir)
         background_tasks.add_task(background_chunker, file_path, chroma_dir, user_id)
-        update_retriever_status(user_id, file_path, Status.PROCESSING)
+        retriever_client.update_retriever_status(user_id, file_path, Status.PROCESSING)
         return {"message": "PDF uploaded and processing started."}
     
     except Exception as e:
@@ -293,7 +265,7 @@ async def ask_question(request: QuestionRequest, background_tasks: BackgroundTas
     try:
         if not file:
             raise HTTPException(status_code=400, detail="PDF file not provided.")
-        retriever = get_retriever(user_id, f"{FILE_STORE}{file}")
+        retriever = retriever_client.get_retriever(user_id, f"{FILE_STORE}{file}")
         if not retriever:
             raise HTTPException(status_code=400, detail="PDF not uploaded.")
         background_tasks.add_task(background_response_processor, user_id, f"{FILE_STORE}{file}", request.question)
