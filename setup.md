@@ -48,7 +48,7 @@ docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
 
 Start a model (e.g., `llama3`, we use `tinyllama` because of hardware constraints):
 ```bash
-docker exec -it ollama ollama run tinyllama
+docker exec -d ollama ollama run tinyllama
 ```
 
 ### Step 4: Start the FastAPI App
