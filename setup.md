@@ -46,9 +46,9 @@ Pull and run the Ollama Docker image:
 docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
 ```
 
-Start a model (e.g., `llama3`, we use `tinyllama` because of hardware constraints):
+Start a model (e.g., `llama3`, we use `mistral` because of hardware constraints):
 ```bash
-docker exec -d ollama ollama run tinyllama
+docker exec ollama ollama mistral --keepalive=-1m
 ```
 
 ### Step 4: Start the FastAPI App
